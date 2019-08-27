@@ -52,27 +52,62 @@ metadata:
   namespace: kube-system
 data:
   Corefile: |
+    import /etc/coredns-zones/*.corefile
     .:53 {
         errors
         health
+        import /etc/coredns-inline/*.corefile
+        hosts /etc/coredns/NodeHosts {
+          reload 1s
+          fallthrough
+        }
         kubernetes %{CLUSTER_DOMAIN}% in-addr.arpa ip6.arpa {
           pods insecure
           upstream
           fallthrough in-addr.arpa ip6.arpa
         }
-        hosts /etc/coredns/NodeHosts {
-          reload 1s
-          fallthrough
-        }
+        import /etc/coredns-fallthrough/*.corefile
         prometheus :9153
-        proxy . /etc/resolv.conf
+        forward . /etc/resolv.conf
         cache 30
         loop
         reload
         loadbalance
     }
 ---
-apiVersion: extensions/v1beta1
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-zones
+  namespace: kube-system
+data:
+  Example.corefile: |
+    ### this is an example server block to prevent warnings
+    # example.com {
+    #   log
+    # }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-inline
+  namespace: kube-system
+data:
+  Example.corefile: |
+    ### this is an example inline root directive to prevent warnings
+    # log
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-fallthrough
+  namespace: kube-system
+data:
+  Example.corefile: |
+    ### this is an example root fallthrough directive to prevent warnings
+    # log
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: coredns
@@ -102,7 +137,7 @@ spec:
         beta.kubernetes.io/os: linux
       containers:
       - name: coredns
-        image: coredns/coredns:1.3.0
+        image: coredns/coredns:1.6.2
         imagePullPolicy: IfNotPresent
         resources:
           limits:
@@ -114,6 +149,15 @@ spec:
         volumeMounts:
         - name: config-volume
           mountPath: /etc/coredns
+          readOnly: true
+        - name: config-volume-zones
+          mountPath: /etc/coredns-zones
+          readOnly: true
+        - name: config-volume-inline
+          mountPath: /etc/coredns-inline
+          readOnly: true
+        - name: config-volume-fallthrough
+          mountPath: /etc/coredns-fallthrough
           readOnly: true
         ports:
         - containerPort: 53
@@ -152,6 +196,15 @@ spec:
               path: Corefile
             - key: NodeHosts
               path: NodeHosts
+        - name: config-volume-zones
+          configMap:
+            name: coredns-zones
+        - name: config-volume-inline
+          configMap:
+            name: coredns-inline
+        - name: config-volume-fallthrough
+          configMap:
+            name: coredns-fallthrough
 ---
 apiVersion: v1
 kind: Service
