@@ -199,16 +199,53 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 	// For Unified (v2) cgroups we can directly check to see what controllers are mounted
 	// under the unified hierarchy.
 	if cgroupsModeV2 {
-		m, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
+
+		cgroupRoot, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
+		if err != nil {
+			logrus.Errorf("Failed to load root cgroup: %+v", err)
+			return "", "", false, false
+		}
+
+		cgroupRootProcs, err := cgroupRoot.Procs(false)
 		if err != nil {
 			return "", "", false, false
 		}
-		controllers, err := m.Controllers()
+
+		cgroupRootControllers, err := cgroupRoot.Controllers()
 		if err != nil {
 			return "", "", false, false
 		}
+
+		// move all processes from the root group to the /init group (if any)
+		if len(cgroupRootProcs) > 0 {
+			// create /init group directory where we're going to move processes to (doesn't do anything if it exists)
+			if err := os.MkdirAll("/sys/fs/cgroup/init", 0744); err != nil {
+				logrus.Errorf("Failed to create cgroup/init directory: %+v", err)
+				return "", "", false, false
+			}
+
+			// load newly created /init group
+			cgroupInit, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/init")
+			if err != nil {
+				return "", "", false, false
+			}
+
+			for _, proc := range cgroupRootProcs {
+				if err := cgroupInit.AddProc(proc); err != nil {
+					logrus.Errorf("Failed to add PID %d to cgroup/init: %+v", proc, err)
+					return "", "", false, false
+				}
+			}
+
+			// enable controllers (subtree_control)
+			if err := cgroupInit.ToggleControllers(cgroupRootControllers, cgroupsv2.Enable); err != nil {
+				logrus.Errorf("Failed to toggle /init cgroup controllers: %+v", err)
+				return "", "", false, false
+			}
+		}
+
 		// Intentionally using an expressionless switch to match the logic below
-		for _, controller := range controllers {
+		for _, controller := range cgroupRootControllers {
 			switch {
 			case controller == "cpu":
 				hasCFS = true
