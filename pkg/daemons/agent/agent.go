@@ -15,6 +15,7 @@ import (
 	"github.com/rancher/k3s/pkg/daemons/executor"
 	"github.com/rancher/k3s/pkg/util"
 	"github.com/rancher/k3s/pkg/version"
+	"github.com/rootless-containers/rootlesskit/pkg/parent/cgrouputil"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/net"
@@ -216,30 +217,10 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 			return "", "", false, false
 		}
 
-		// move all processes from the root group to the /init group (if any)
+		// evacuate from / to /init
 		if len(cgroupRootProcs) > 0 {
-			// create /init group directory where we're going to move processes to (doesn't do anything if it exists)
-			if err := os.MkdirAll("/sys/fs/cgroup/init", 0744); err != nil {
-				logrus.Errorf("Failed to create cgroup/init directory: %+v", err)
-				return "", "", false, false
-			}
-
-			// load newly created /init group
-			cgroupInit, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/init")
-			if err != nil {
-				return "", "", false, false
-			}
-
-			for _, proc := range cgroupRootProcs {
-				if err := cgroupInit.AddProc(proc); err != nil {
-					logrus.Errorf("Failed to add PID %d to cgroup/init: %+v", proc, err)
-					return "", "", false, false
-				}
-			}
-
-			// enable controllers (subtree_control)
-			if err := cgroupInit.ToggleControllers(cgroupRootControllers, cgroupsv2.Enable); err != nil {
-				logrus.Errorf("Failed to toggle /init cgroup controllers: %+v", err)
+			if err := cgrouputil.EvacuateCgroup2("init"); err != nil {
+				logrus.Errorf("failed to evacuate cgroup2: %+v", err)
 				return "", "", false, false
 			}
 		}
