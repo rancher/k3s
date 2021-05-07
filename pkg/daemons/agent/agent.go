@@ -131,8 +131,8 @@ func startKubelet(cfg *config.Agent) error {
 	if err != nil || defaultIP.String() != cfg.NodeIP {
 		argsMap["node-ip"] = cfg.NodeIP
 	}
-	kubeletRoot, runtimeRoot, hasCFS, hasPIDs, cgroupsModeV2 := CheckCgroups()
-	if cgroupsModeV2 {
+	kubeletRoot, runtimeRoot, hasCFS, hasPIDs, evacuateCgroup2 := CheckCgroups()
+	if evacuateCgroup2 {
 		// evacuate processes from cgroup / to /init
 		if err := cgrouputil.EvacuateCgroup2("init"); err != nil {
 			logrus.Errorf("failed to evacuate cgroup2: %+v", err)
@@ -201,7 +201,7 @@ func addFeatureGate(current, new string) string {
 	return current + "," + new
 }
 
-func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool) {
+func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, v2Evac bool) {
 	cgroupsModeV2 := cgroups.Mode() == cgroups.Unified
 
 	// For Unified (v2) cgroups we can directly check to see what controllers are mounted
@@ -211,12 +211,19 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool
 		cgroupRoot, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
 		if err != nil {
 			logrus.Errorf("Failed to load root cgroup: %+v", err)
-			return "", "", false, false, cgroupsModeV2
+			return "", "", false, false, v2Evac
 		}
+
+		cgroupRootProcs, err := cgroupRoot.Procs(false)
+		if err != nil {
+			return "", "", false, false, v2Evac
+		}
+
+		v2Evac = len(cgroupRootProcs) > 0
 
 		cgroupRootControllers, err := cgroupRoot.Controllers()
 		if err != nil {
-			return "", "", false, false, cgroupsModeV2
+			return "", "", false, false, v2Evac
 		}
 
 		// Intentionally using an expressionless switch to match the logic below
@@ -232,7 +239,7 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool
 
 	f, err := os.Open("/proc/self/cgroup")
 	if err != nil {
-		return "", "", false, false, cgroupsModeV2
+		return "", "", false, false, v2Evac
 	}
 	defer f.Close()
 
@@ -286,7 +293,7 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool
 		// a host PID scenario but we don't support this.
 		g, err := os.Open("/proc/1/cgroup")
 		if err != nil {
-			return "", "", false, false, cgroupsModeV2
+			return "", "", false, false, v2Evac
 		}
 		defer g.Close()
 		scan = bufio.NewScanner(g)
@@ -310,5 +317,5 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool
 			}
 		}
 	}
-	return kubeletRoot, runtimeRoot, hasCFS, hasPIDs, cgroupsModeV2
+	return kubeletRoot, runtimeRoot, hasCFS, hasPIDs, v2Evac
 }
