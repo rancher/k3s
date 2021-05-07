@@ -15,7 +15,7 @@ import (
 	"github.com/rancher/k3s/pkg/daemons/executor"
 	"github.com/rancher/k3s/pkg/util"
 	"github.com/rancher/k3s/pkg/version"
-	"github.com/rootless-containers/rootlesskit/pkg/parent/cgrouputil"
+	"github.com/rootless-containers/rootlesskit/pkg/parent/cgrouputil" // used for cgroup2 evacuation, not specific to rootless mode
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/net"
@@ -131,7 +131,14 @@ func startKubelet(cfg *config.Agent) error {
 	if err != nil || defaultIP.String() != cfg.NodeIP {
 		argsMap["node-ip"] = cfg.NodeIP
 	}
-	kubeletRoot, runtimeRoot, hasCFS, hasPIDs := CheckCgroups()
+	kubeletRoot, runtimeRoot, hasCFS, hasPIDs, cgroupsModeV2 := CheckCgroups()
+	if cgroupsModeV2 {
+		// evacuate processes from cgroup / to /init
+		if err := cgrouputil.EvacuateCgroup2("init"); err != nil {
+			logrus.Errorf("failed to evacuate cgroup2: %+v", err)
+			return err
+		}
+	}
 	if !hasCFS {
 		logrus.Warn("Disabling CPU quotas due to missing cpu.cfs_period_us")
 		argsMap["cpu-cfs-quota"] = "false"
@@ -194,7 +201,7 @@ func addFeatureGate(current, new string) string {
 	return current + "," + new
 }
 
-func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
+func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs, isV2 bool) {
 	cgroupsModeV2 := cgroups.Mode() == cgroups.Unified
 
 	// For Unified (v2) cgroups we can directly check to see what controllers are mounted
@@ -204,25 +211,12 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 		cgroupRoot, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
 		if err != nil {
 			logrus.Errorf("Failed to load root cgroup: %+v", err)
-			return "", "", false, false
-		}
-
-		cgroupRootProcs, err := cgroupRoot.Procs(false)
-		if err != nil {
-			return "", "", false, false
+			return "", "", false, false, cgroupsModeV2
 		}
 
 		cgroupRootControllers, err := cgroupRoot.Controllers()
 		if err != nil {
-			return "", "", false, false
-		}
-
-		// evacuate from / to /init
-		if len(cgroupRootProcs) > 0 {
-			if err := cgrouputil.EvacuateCgroup2("init"); err != nil {
-				logrus.Errorf("failed to evacuate cgroup2: %+v", err)
-				return "", "", false, false
-			}
+			return "", "", false, false, cgroupsModeV2
 		}
 
 		// Intentionally using an expressionless switch to match the logic below
@@ -238,7 +232,7 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 
 	f, err := os.Open("/proc/self/cgroup")
 	if err != nil {
-		return "", "", false, false
+		return "", "", false, false, cgroupsModeV2
 	}
 	defer f.Close()
 
@@ -292,7 +286,7 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 		// a host PID scenario but we don't support this.
 		g, err := os.Open("/proc/1/cgroup")
 		if err != nil {
-			return "", "", false, false
+			return "", "", false, false, cgroupsModeV2
 		}
 		defer g.Close()
 		scan = bufio.NewScanner(g)
@@ -316,5 +310,5 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
 			}
 		}
 	}
-	return kubeletRoot, runtimeRoot, hasCFS, hasPIDs
+	return kubeletRoot, runtimeRoot, hasCFS, hasPIDs, cgroupsModeV2
 }

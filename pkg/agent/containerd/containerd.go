@@ -340,7 +340,7 @@ func setupContainerdConfig(ctx context.Context, cfg *config.Node) error {
 	}
 
 	isRunningInUserNS := system.RunningInUserNS()
-	_, _, hasCFS, hasPIDs := agent.CheckCgroups()
+	_, _, hasCFS, hasPIDs, _ := agent.CheckCgroups()
 	// "/sys/fs/cgroup" is namespaced
 	cgroupfsWritable := unix.Access("/sys/fs/cgroup", unix.W_OK) == nil
 	disableCgroup := isRunningInUserNS && (!hasCFS || !hasPIDs || !cgroupfsWritable)
