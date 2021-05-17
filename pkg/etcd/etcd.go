@@ -100,6 +100,11 @@ func (e *ETCD) EndpointName() string {
 	return "etcd"
 }
 
+// SetControlConfig sets the given config on the etcd struct.
+func (e *ETCD) SetControlConfig(config *config.Control) {
+	e.config = config
+}
+
 // Test ensures that the local node is a voting member of the target cluster.
 // If it is still a learner or not a part of the cluster, an error is raised.
 func (e *ETCD) Test(ctx context.Context) error {
@@ -201,12 +206,8 @@ func (e *ETCD) Reset(ctx context.Context, rebootstrap func() error) error {
 	// If asked to restore from a snapshot, do so
 	if e.config.ClusterResetRestorePath != "" {
 		if e.config.EtcdS3 {
-			if e.s3 == nil {
-				s3, err := newS3(ctx, e.config)
-				if err != nil {
-					return err
-				}
-				e.s3 = s3
+			if err := e.initS3IfNil(ctx); err != nil {
+				return err
 			}
 			logrus.Infof("Retrieving etcd snapshot %s from S3", e.config.ClusterResetRestorePath)
 			if err := e.s3.download(ctx); err != nil {
@@ -836,12 +837,8 @@ func (e *ETCD) Snapshot(ctx context.Context, config *config.Control) error {
 
 	if e.config.EtcdS3 {
 		logrus.Infof("Saving etcd snapshot %s to S3", snapshotName)
-		if e.s3 == nil {
-			s3, err := newS3(ctx, config)
-			if err != nil {
-				return err
-			}
-			e.s3 = s3
+		if err := e.initS3IfNil(ctx); err != nil {
+			return err
 		}
 		if err := e.s3.upload(ctx, snapshotPath); err != nil {
 			return err
@@ -874,9 +871,9 @@ type s3Config struct {
 	Folder        string `json:"folder,omitempty"`
 }
 
-// snapshotFile represents a single snapshot and it's
+// SnapshotFile represents a single snapshot and it's
 // metadata.
-type snapshotFile struct {
+type SnapshotFile struct {
 	Name string `json:"name"`
 	// Location contains the full path of the snapshot. For
 	// local paths, the location will be prefixed with "file://".
@@ -890,19 +887,15 @@ type snapshotFile struct {
 // listSnapshots provides a list of the currently stored
 // snapshots on disk or in S3 along with their relevant
 // metadata.
-func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]snapshotFile, error) {
-	var snapshots []snapshotFile
+func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]SnapshotFile, error) {
+	var snapshots []SnapshotFile
 
 	if e.config.EtcdS3 {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		if e.s3 == nil {
-			s3, err := newS3(ctx, e.config)
-			if err != nil {
-				return nil, err
-			}
-			e.s3 = s3
+		if err := e.initS3IfNil(ctx); err != nil {
+			return nil, err
 		}
 
 		objects := e.s3.client.ListObjects(ctx, e.config.EtcdS3BucketName, minio.ListObjectsOptions{})
@@ -920,7 +913,7 @@ func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]snapsho
 				return nil, err
 			}
 
-			snapshots = append(snapshots, snapshotFile{
+			snapshots = append(snapshots, SnapshotFile{
 				Name:     filepath.Base(obj.Key),
 				NodeName: "s3",
 				CreatedAt: &metav1.Time{
@@ -949,7 +942,7 @@ func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]snapsho
 	nodeName := os.Getenv("NODE_NAME")
 
 	for _, f := range files {
-		snapshots = append(snapshots, snapshotFile{
+		snapshots = append(snapshots, SnapshotFile{
 			Name:     f.Name(),
 			Location: "file://" + filepath.Join(snapshotDir, f.Name()),
 			NodeName: nodeName,
@@ -963,8 +956,124 @@ func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]snapsho
 	return snapshots, nil
 }
 
+// initS3IfNil initializes the S3 client
+// if it hasn't yet been initialized.
+func (e *ETCD) initS3IfNil(ctx context.Context) error {
+	if e.s3 == nil {
+		s3, err := newS3(ctx, e.config)
+		if err != nil {
+			return err
+		}
+		e.s3 = s3
+	}
+
+	return nil
+}
+
+// PruneSnapshots perfrorms a retention run with the given
+// retention duration and removes expired snapshots.
+func (e *ETCD) PruneSnapshots(ctx context.Context) error {
+	snapshotDir, err := snapshotDir(e.config)
+	if err != nil {
+		return errors.Wrap(err, "failed to get the snapshot dir")
+	}
+
+	return snapshotRetention(e.config.EtcdSnapshotRetention, snapshotDir)
+}
+
+// ListSnapshots is an exported wrapper method that wraps an
+// unexported method of the same name.
+func (e *ETCD) ListSnapshots(ctx context.Context) ([]SnapshotFile, error) {
+	snapshotDir, err := snapshotDir(e.config)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get the snapshot dir")
+	}
+
+	return e.listSnapshots(ctx, snapshotDir)
+}
+
+// deleteSnapshots removes the given snapshots from
+// either local storage or S3.
+func (e *ETCD) DeleteSnapshots(ctx context.Context, snapshots []string) error {
+	snapshotDir, err := snapshotDir(e.config)
+	if err != nil {
+		return errors.Wrap(err, "failed to get the snapshot dir")
+	}
+
+	if e.config.EtcdS3 {
+		logrus.Info("Removing the given etcd snapshot(s) from S3")
+		logrus.Debugf("Removing the given etcd snapshot(s) from S3: %v", snapshots)
+
+		if e.initS3IfNil(ctx); err != nil {
+			return err
+		}
+
+		objectsCh := make(chan minio.ObjectInfo)
+		defer close(objectsCh)
+
+		ctx, cancel := context.WithTimeout(ctx, defaultS3OpTimeout)
+		defer cancel()
+
+		go func() {
+			opts := minio.ListObjectsOptions{
+				Recursive: true,
+			}
+
+			for obj := range e.s3.client.ListObjects(ctx, e.config.EtcdS3BucketName, opts) {
+				if obj.Err != nil {
+					logrus.Error(obj.Err)
+					return
+				}
+
+				// iterate through the given snapshots and only
+				// add them to the channel for remove if they're
+				// actually found from the bucket listing.
+				for _, snapshot := range snapshots {
+					if snapshot == obj.Key {
+						objectsCh <- obj
+					}
+				}
+			}
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				logrus.Errorf("Unable to delete snapshot: %v", ctx.Err())
+				return e.StoreSnapshotData(ctx)
+			case <-time.After(time.Millisecond * 100):
+				continue
+			case err, ok := <-e.s3.client.RemoveObjects(ctx, e.config.EtcdS3BucketName, objectsCh, minio.RemoveObjectsOptions{}):
+				if err.Err != nil {
+					logrus.Errorf("Unable to delete snapshot: %v", err.Err)
+				}
+				if !ok {
+					return e.StoreSnapshotData(ctx)
+				}
+			}
+		}
+	}
+
+	logrus.Info("Removing the given locally stored etcd snapshot(s)")
+	logrus.Debugf("Removing the given locally stored etcd snapshot(s): %v", snapshots)
+
+	for _, s := range snapshots {
+		// check if the given snapshot exists. If it does,
+		// remove it, otherwise continue.
+		sf := filepath.Join(snapshotDir, s)
+		if _, err := os.Stat(sf); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.Remove(sf); err != nil {
+			return err
+		}
+	}
+
+	return e.StoreSnapshotData(ctx)
+}
+
 // updateSnapshotData populates the given map with the contents of the given slice.
-func updateSnapshotData(data map[string]string, snapshotFiles []snapshotFile) error {
+func updateSnapshotData(data map[string]string, snapshotFiles []SnapshotFile) error {
 	for _, v := range snapshotFiles {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -1019,14 +1128,14 @@ func (e *ETCD) StoreSnapshotData(ctx context.Context) error {
 		}
 
 		if snapshotConfigMap.Data == nil {
-			snapshotConfigMap.Data = make(map[string]string, 0)
+			snapshotConfigMap.Data = make(map[string]string)
 		}
 
 		nodeName := os.Getenv("NODE_NAME")
 
 		// remove entries for this node only
 		for k, v := range snapshotConfigMap.Data {
-			var sf snapshotFile
+			var sf SnapshotFile
 			if err := json.Unmarshal([]byte(v), &sf); err != nil {
 				return err
 			}
