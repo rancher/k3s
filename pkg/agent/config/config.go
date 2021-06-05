@@ -510,6 +510,12 @@ func get(ctx context.Context, envInfo *cmds.Agent, proxy proxy.Proxy) (*config.N
 			nodeConfig.FlannelConf = envInfo.FlannelConf
 			nodeConfig.FlannelConfOverride = true
 		}
+
+		if envInfo.FlannelConfTpl != "" {
+			nodeConfig.FlannelConfTpl = envInfo.FlannelConfTpl
+			nodeConfig.FlannelConfOverride = true
+		}
+
 		nodeConfig.AgentConfig.CNIBinDir = filepath.Dir(hostLocal)
 		nodeConfig.AgentConfig.CNIConfDir = filepath.Join(envInfo.DataDir, "agent", "etc", "cni", "net.d")
 	}

@@ -31,6 +31,7 @@ type Node struct {
 	SELinux                  bool
 	FlannelBackend           string
 	FlannelConf              string
+	FlannelConfTpl           string
 	FlannelConfOverride      bool
 	FlannelIface             *net.Interface
 	Containerd               Containerd
