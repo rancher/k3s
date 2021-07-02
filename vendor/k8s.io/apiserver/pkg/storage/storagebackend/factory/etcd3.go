@@ -22,13 +22,14 @@ import (
 	"net"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	grpcprom "github.com/grpc-ecosystem/go-grpc-prometheus"
-	"go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/pkg/transport"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -137,11 +138,15 @@ func newETCD3Client(c storagebackend.TransportConfig) (*clientv3.Client, error) 
 	}
 	if egressDialer != nil {
 		dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-			u, err := url.Parse(addr)
-			if err != nil {
-				return nil, err
+			if strings.Contains(addr, "//") {
+				// etcd client prior to 3.5 passed URLs to dialer, normalize to address
+				u, err := url.Parse(addr)
+				if err != nil {
+					return nil, err
+				}
+				addr = u.Host
 			}
-			return egressDialer(ctx, "tcp", u.Host)
+			return egressDialer(ctx, "tcp", addr)
 		}
 		dialOptions = append(dialOptions, grpc.WithContextDialer(dialer))
 	}
@@ -149,6 +154,7 @@ func newETCD3Client(c storagebackend.TransportConfig) (*clientv3.Client, error) 
 		DialTimeout:          dialTimeout,
 		DialKeepAliveTime:    keepaliveTime,
 		DialKeepAliveTimeout: keepaliveTimeout,
+		PermitWithoutStream:  true,
 		DialOptions:          dialOptions,
 		Endpoints:            c.ServerList,
 		TLS:                  tlsConfig,
@@ -254,7 +260,12 @@ func newETCD3Storage(c storagebackend.Config, newFunc func() runtime.Object) (st
 	if transformer == nil {
 		transformer = value.IdentityTransformer
 	}
-	return etcd3.New(client, c.Codec, newFunc, c.Prefix, transformer, c.Paging, c.LeaseManagerConfig), destroyFunc, nil
+
+	store := etcd3.New(client, c.Codec, newFunc, c.Prefix, transformer, c.Paging, c.LeaseManagerConfig)
+	if c.ObjectCountTracker != nil {
+		store = etcd3.WithObjectCountTracker(store, c.ObjectCountTracker)
+	}
+	return store, destroyFunc, nil
 }
 
 // startDBSizeMonitorPerEndpoint starts a loop to monitor etcd database size and update the

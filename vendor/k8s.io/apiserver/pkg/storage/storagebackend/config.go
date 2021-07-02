@@ -27,6 +27,7 @@ import (
 
 const (
 	StorageTypeUnset = ""
+	StorageTypeETCD2 = "etcd2"
 	StorageTypeETCD3 = "etcd3"
 
 	DefaultCompactInterval      = 5 * time.Minute
@@ -80,6 +81,8 @@ type Config struct {
 	HealthcheckTimeout time.Duration
 
 	LeaseManagerConfig etcd3.LeaseManagerConfig
+
+	ObjectCountTracker etcd3.ObjectCountTrackerFunc
 }
 
 func NewDefaultConfig(prefix string, codec runtime.Codec) *Config {
