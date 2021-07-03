@@ -88,7 +88,7 @@ require (
 	github.com/google/uuid v1.2.0
 	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/websocket v1.4.2
-	github.com/k3s-io/helm-controller v0.9.1
+	github.com/k3s-io/helm-controller v0.11.0
 	github.com/k3s-io/kine v0.7.0
 	github.com/klauspost/compress v1.12.2
 	github.com/kubernetes-sigs/cri-tools v0.0.0-00010101000000-000000000000
@@ -102,11 +102,11 @@ require (
 	github.com/opencontainers/selinux v1.8.0
 	github.com/pierrec/lz4 v2.6.0+incompatible
 	github.com/pkg/errors v0.9.1
-	github.com/rancher/dynamiclistener v0.2.3
+	github.com/rancher/dynamiclistener v0.2.6
+	github.com/rancher/lasso v0.0.0-20210616224652-fc3ebd901c08
 	github.com/rancher/remotedialer v0.2.0
 	github.com/rancher/wharfie v0.3.4
-	github.com/rancher/wrangler v0.6.2
-	github.com/rancher/wrangler-api v0.6.0
+	github.com/rancher/wrangler v0.8.3
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rootless-containers/rootlesskit v0.14.0
 	github.com/sirupsen/logrus v1.8.1
@@ -118,7 +118,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.5.0
 	go.etcd.io/etcd/etcdutl/v3 v3.5.0
 	go.etcd.io/etcd/server/v3 v3.5.0
-	golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83
+	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
 	golang.org/x/net v0.0.0-20210520170846-37e1c6afe023
 	golang.org/x/sys v0.0.0-20210616094352-59db8d763f22
 	google.golang.org/grpc v1.38.0
