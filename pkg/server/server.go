@@ -108,11 +108,11 @@ func runControllers(ctx context.Context, config *Config) error {
 
 	sc, err := NewContext(ctx, controlConfig.Runtime.KubeConfigAdmin)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to create new server context")
 	}
 
 	if err := stageFiles(ctx, sc, controlConfig); err != nil {
-		return err
+		return errors.Wrap(err, "failed to stage files")
 	}
 
 	// run migration before we set controlConfig.Runtime.Core
@@ -120,24 +120,24 @@ func runControllers(ctx context.Context, config *Config) error {
 		sc.Core.Core().V1().Secret(),
 		sc.Core.Core().V1().Node(),
 		controlConfig.Runtime.NodePasswdFile); err != nil {
-		logrus.Warn(errors.Wrapf(err, "error migrating node-password file"))
+		logrus.Warn(errors.Wrap(err, "error migrating node-password file"))
 	}
 	controlConfig.Runtime.Core = sc.Core
 
 	if controlConfig.Runtime.ClusterControllerStart != nil {
 		if err := controlConfig.Runtime.ClusterControllerStart(ctx); err != nil {
-			return errors.Wrapf(err, "starting cluster controllers")
+			return errors.Wrap(err, "failed to start cluster controllers")
 		}
 	}
 
 	for _, controller := range config.Controllers {
 		if err := controller(ctx, sc); err != nil {
-			return errors.Wrap(err, "controller")
+			return errors.Wrapf(err, "failed to start custom controller %s", util.GetFunctionName(controller))
 		}
 	}
 
 	if err := sc.Start(ctx); err != nil {
-		return err
+		return errors.Wrap(err, "failed to start wranger controllers")
 	}
 
 	start := func(ctx context.Context) {
